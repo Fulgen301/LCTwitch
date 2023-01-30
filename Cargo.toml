@@ -1,0 +1,37 @@
+[package]
+name = "lc_twitch"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "fmod64"
+crate-type = ["cdylib"]
+
+[dependencies]
+byte-strings = "0.1.0"
+cpp = "0.5"
+encoding_rs = "0.8.31"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_repr = "0.1"
+tokio = { version = "1", features = ["full"] }
+warp = "0.3.3"
+
+[dependencies.windows]
+version = "0.42.0"
+features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging"
+]
+
+[build-dependencies]
+cpp_build = "0.5"
+
+[profile.dev]
+panic = "abort"
