@@ -117,7 +117,8 @@ async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> {
 }
 
 pub async fn run_server(instance: Arc<LCTwitch>, rx: Receiver<()>) {
-    let instance_filter = warp::any().map(move || instance.clone());
+    let instance_clone = instance.clone();
+    let instance_filter = warp::any().map(move || instance_clone.clone());
 
     let route = warp::path("v1")
         .and(warp::path("action"))
@@ -130,7 +131,7 @@ pub async fn run_server(instance: Arc<LCTwitch>, rx: Receiver<()>) {
 
                 
     let (_, server) = warp::serve(route)
-        .bind_with_graceful_shutdown(([127, 0, 0, 1], 11120), async move {
+        .bind_with_graceful_shutdown(([127, 0, 0, 1], instance.config().port()), async move {
             rx.await.unwrap();
         });
 

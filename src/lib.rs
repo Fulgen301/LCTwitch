@@ -8,11 +8,13 @@ use std::{ffi::{CStr, c_char, CString, NulError}, error::Error};
 use std::sync::Arc;
 
 use byte_strings::c_str;
+use config::Config;
 use detour::{find_function, Module};
 use script::Script;
 use window::WindowSubclass;
 use windows::{Win32::{System::{LibraryLoader::GetModuleHandleW, Threading::{GetCurrentThread, GetCurrentProcess, WaitForSingleObject}, Diagnostics::Debug::*}, Foundation::{BOOL, HANDLE, HWND, WPARAM, LPARAM, LRESULT, HINSTANCE, DuplicateHandle, DUPLICATE_SAME_ACCESS}, UI::{WindowsAndMessaging::{EnumWindows, GetWindowLongPtrW, GWLP_HINSTANCE, GetClassNameW, WM_USER, PostMessageA}, Shell::DefSubclassProc}}, core::PWSTR};
 
+pub mod config;
 pub mod dbghelp;
 pub mod detour;
 pub mod export;
@@ -103,6 +105,7 @@ impl LCTwitchMainThread {
 pub struct LCTwitch {
     main_thread_struct: LCTwitchMainThread,
     log: FnLog,
+    config: Config,
     script: Script
 }
 
@@ -126,6 +129,7 @@ impl LCTwitch {
         Ok(LCTwitch {
             main_thread_struct,
             log,
+            config: Config::new()?,
             script
         })
     }
@@ -149,6 +153,10 @@ impl LCTwitch {
 
             PostMessageA(window, WM_LCTWITCH_CALLBACK, fat_pointer.0, fat_pointer.1);
         }
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 }
 
