@@ -78,7 +78,8 @@ struct ExecuteInfo {
     get_data_string: extern "win64" fn(*const C4Value) -> StdStrBuf,
     c4value_destructor: extern "win64" fn(*mut C4Value),
     stdstrbuf_destructor: extern "win64" fn(*mut StdStrBuf),
-    value_reply: Option<tokio::sync::oneshot::Sender<Result<AutoFree<c_char>, ScriptError>>>
+    value_reply: Option<tokio::sync::oneshot::Sender<Result<AutoFree<c_char>, ScriptError>>>,
+    original_vtable: *const *const c_void,
 }
 
 const VTABLE_ENTRIES: usize = 7;
@@ -142,8 +143,8 @@ pub struct Script {
     constructor: extern "win64" fn(*mut C4ControlScript),
     buf_copy: extern "win64" fn(*mut c_void),
     do_input: extern "win64" fn(*mut C4GameControl, i32, *mut C4ControlScript, i32),
-    vtable: *const *const c_void,
-    modified_vtable: [*const c_void; VTABLE_ENTRIES + 2],
+    original_vtable: *const *const c_void,
+    modified_vtable_with_locator: [*const c_void; VTABLE_ENTRIES + 2],
     target_obj_offset: usize,
     
     control_mode: *const i32,
@@ -244,8 +245,8 @@ impl Script {
             constructor: detour::find_function(clonk_module, c_str!("C4ControlPacket::C4ControlPacket")).ok_or("C4ControlPacket::C4ControlPacket")?,
             buf_copy: detour::find_function(clonk_module, c_str!("StdStrBuf::Copy")).ok_or("StdStrBuf::Copy")?,
             do_input: detour::find_function(clonk_module, c_str!("C4GameControl::DoInput")).ok_or("C4GameControl::DoInput")?,
-            vtable: detour::find_function(clonk_module, c_str!("C4ControlScript::`vftable'")).ok_or("vftable")?,
-            modified_vtable: [std::ptr::null(); VTABLE_ENTRIES + 2],
+            original_vtable: detour::find_function(clonk_module, c_str!("C4ControlScript::`vftable'")).ok_or("vftable")?,
+            modified_vtable_with_locator: [std::ptr::null(); VTABLE_ENTRIES + 2],
             target_obj_offset,
             control_mode,
             allow_scripting_in_replays,
@@ -261,7 +262,8 @@ impl Script {
                 get_data_string: detour::find_function(clonk_module, c_str!("C4Value::GetDataString")).ok_or("C4Value::GetDataString")?,
                 c4value_destructor: detour::find_function(clonk_module, c_str!("C4Value::~C4Value")).ok_or("C4Value::~C4Value")?,
                 stdstrbuf_destructor: detour::find_function(clonk_module, c_str!("StdStrBuf::~StdStrBuf")).ok_or("StdStrBuf::~StdStrBuf")?,
-                value_reply: None
+                value_reply: None,
+                original_vtable: std::ptr::null()
             },
         };
 
@@ -271,12 +273,12 @@ impl Script {
 
     fn prepare_vtable(&mut self) {
         unsafe {
-            std::ptr::copy_nonoverlapping(self.vtable.offset(-1), self.modified_vtable.as_mut_ptr(), VTABLE_ENTRIES + 1);
+            std::ptr::copy_nonoverlapping(self.original_vtable.offset(-1), self.modified_vtable_with_locator.as_mut_ptr(), VTABLE_ENTRIES + 1);
         }
 
-        self.modified_vtable[1 + VTABLE_EXECUTE] = control_script_execute as *const c_void;
+        self.modified_vtable_with_locator[1 + VTABLE_EXECUTE] = control_script_execute as *const c_void;
 
-        self.modified_vtable[1 + VTABLE_ENTRIES] = std::ptr::null();
+        self.modified_vtable_with_locator[1 + VTABLE_ENTRIES] = std::ptr::null();
     }
 
     fn set_execute_info(vtable: &mut [*const c_void], execute_info: Box<ExecuteInfo>) {
@@ -323,16 +325,17 @@ impl Script {
             
                 (self.constructor)(memory);
 
-                let mut modified_vtable = self.modified_vtable;
+                let mut modified_vtable_with_locator = Box::new(self.modified_vtable_with_locator.clone());
 
                 let execute_info = Box::new(ExecuteInfo {
                     value_reply: Some(tx),
+                    original_vtable: self.original_vtable,
                     ..self.execute_info
                 });
 
-                Self::set_execute_info(modified_vtable.as_mut_slice(), execute_info);
+                Self::set_execute_info(modified_vtable_with_locator.as_mut_slice(), execute_info);
 
-                (memory as *mut *const *const c_void).write(modified_vtable.as_ptr().add(1));
+                (memory as *mut *const *const c_void).write(modified_vtable_with_locator.as_ptr().add(1));
 
                 (memory.add(self.target_obj_offset) as *mut i32).write(-2);
                 
@@ -357,6 +360,7 @@ impl Script {
                 (script_buf.add(16) as *mut usize).write(bytes.len());
                 (self.buf_copy)(script_buf);
 
+                Box::into_raw(modified_vtable_with_locator);
                 (self.do_input)(self.game_control, 0x80 | 0x08, memory, 4);
             }
         });
@@ -376,9 +380,13 @@ unsafe impl Sync for Script {}
 
 pub extern "win64" fn control_script_execute(control: *mut C4ControlScript) {
     let mut execute_info = unsafe {
-        let vtable = *(control as *const *const *const c_void);
-        let execute_info = vtable.add(VTABLE_ENTRIES).read();
-        Box::from_raw(execute_info as *mut ExecuteInfo)
+        let vtable_ptr = control as *mut *const *const c_void;
+        let vtable = *vtable_ptr;
+        let execute_info = Box::from_raw(vtable.add(VTABLE_ENTRIES).read() as *mut ExecuteInfo);
+
+        *vtable_ptr = execute_info.original_vtable;
+        std::mem::drop(Box::from_raw(vtable.sub(1) as *mut [*const c_void; VTABLE_ENTRIES + 2]));
+        execute_info
     };
 
     let script = unsafe {
