@@ -1,4 +1,4 @@
-use std::{ffi::{CString, c_char, c_void, CStr}, error::Error, mem::MaybeUninit, cell::RefCell};
+use std::{ffi::{CString, c_char, c_void, CStr}, error::Error, mem::MaybeUninit, cell::RefCell, ops::{Deref, DerefMut}};
 
 use byte_strings::c_str;
 use cpp::*;
@@ -74,7 +74,7 @@ struct ExecuteInfo {
     c4value_destructor: extern "win64" fn(*mut C4Value),
     stdstrbuf_destructor: extern "win64" fn(*mut StdStrBuf),
     grab_pointer: extern "win64" fn(*mut StdStrBuf),
-    value_reply: Option<tokio::sync::oneshot::Sender<Result<StdStrBufString, ScriptError>>>
+    value_reply: Option<tokio::sync::oneshot::Sender<Result<AutoFree<c_char>, ScriptError>>>
 }
 
 const VTABLE_ENTRIES: usize = 7;
@@ -106,18 +106,32 @@ cpp!{{
     }}
 
 #[repr(transparent)]
-struct StdStrBufString(*mut c_char);
+struct AutoFree<T>(*mut T);
 
-impl Drop for StdStrBufString {
+impl<T> Drop for AutoFree<T> {
     fn drop(&mut self) {
-        let mut ptr = self.0;
-        cpp!(unsafe [mut ptr as "char *"] {
+        let ptr = self.0;
+        cpp!(unsafe [ptr as "void *"] {
             free(ptr);
         });
     }
 }
 
-unsafe impl Send for StdStrBufString {}
+impl<T> Deref for AutoFree<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0 }
+    }
+}
+
+impl<T> DerefMut for AutoFree<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { &mut *self.0 }
+    }
+}
+
+unsafe impl<T> Send for AutoFree<T> {}
 
 pub struct Script {
     is_running: *const bool,
@@ -289,7 +303,7 @@ impl Script {
 
         let script = CString::new(script)?;
 
-        let (tx, rx) = tokio::sync::oneshot::channel::<Result<StdStrBufString, ScriptError>>();
+        let (tx, rx) = tokio::sync::oneshot::channel::<Result<AutoFree<c_char>, ScriptError>>();
 
         instance.run_in_main_thread(move || {
             let allocated_size = self.execute_info.control_script_size;
@@ -364,7 +378,7 @@ pub extern "win64" fn control_script_execute(control: *mut C4ControlScript) {
     let strictness = C4AulScriptStrict::Strict3;
 
     let buf = {
-        let mut buf = MaybeUninit::<StdStrBufString>::uninit();
+        let mut buf = MaybeUninit::<AutoFree<c_char>>::uninit();
         let buf_ptr = buf.as_mut_ptr();
         let get_data_string = execute_info.get_data_string as *const c_void;
         let c4value_destructor = execute_info.c4value_destructor as *const c_void;
