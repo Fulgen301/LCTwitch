@@ -337,7 +337,6 @@ impl Script {
                 
                 let script_buf = memory.add(self.execute_info.script_offset);
                 (script_buf as *mut u8).write(1);
-                //(memory.add(self.execute_info.script_offset) as *mut u8).write(1);
 
                 let bytes = script.as_bytes_with_nul();
                 (script_buf.add(8) as *mut *const c_char).write(bytes.as_ptr() as *const c_char);
