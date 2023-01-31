@@ -362,10 +362,10 @@ unsafe impl Send for Script {}
 unsafe impl Sync for Script {}
 
 pub extern "win64" fn control_script_execute(control: *mut C4ControlScript) {
-    let execute_info = unsafe {
+    let mut execute_info = unsafe {
         let vtable = *(control as *const *const *const c_void);
         let execute_info = vtable.add(VTABLE_ENTRIES).read();
-        &mut *(execute_info as *mut ExecuteInfo)
+        Box::from_raw(execute_info as *mut ExecuteInfo)
     };
 
     let script = unsafe {
