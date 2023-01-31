@@ -13,6 +13,11 @@ type C4Game = c_void;
 type C4GameControl = c_void;
 type C4ControlScript = c_void;
 
+extern "C" {
+    fn malloc(size: usize) -> *mut c_void;
+    fn free(ptr: *mut c_void);
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, PartialEq)]
 pub enum C4AulScriptStrict {
@@ -73,7 +78,6 @@ struct ExecuteInfo {
     get_data_string: extern "win64" fn(*const C4Value) -> StdStrBuf,
     c4value_destructor: extern "win64" fn(*mut C4Value),
     stdstrbuf_destructor: extern "win64" fn(*mut StdStrBuf),
-    grab_pointer: extern "win64" fn(*mut StdStrBuf),
     value_reply: Option<tokio::sync::oneshot::Sender<Result<AutoFree<c_char>, ScriptError>>>
 }
 
@@ -110,10 +114,9 @@ struct AutoFree<T>(*mut T);
 
 impl<T> Drop for AutoFree<T> {
     fn drop(&mut self) {
-        let ptr = self.0;
-        cpp!(unsafe [ptr as "void *"] {
-            free(ptr);
-        });
+        unsafe {
+            free(self.0 as *mut c_void);
+        }
     }
 }
 
@@ -258,7 +261,6 @@ impl Script {
                 get_data_string: detour::find_function(clonk_module, c_str!("C4Value::GetDataString")).ok_or("C4Value::GetDataString")?,
                 c4value_destructor: detour::find_function(clonk_module, c_str!("C4Value::~C4Value")).ok_or("C4Value::~C4Value")?,
                 stdstrbuf_destructor: detour::find_function(clonk_module, c_str!("StdStrBuf::~StdStrBuf")).ok_or("StdStrBuf::~StdStrBuf")?,
-                grab_pointer: detour::find_function(clonk_module, c_str!("StdStrBuf::GrabPointer")).ok_or("StdStrBuf::GrabPointer")?,
                 value_reply: None
             },
         };
@@ -336,10 +338,22 @@ impl Script {
                 
                 
                 let script_buf = memory.add(self.execute_info.script_offset);
-                (script_buf as *mut u8).write(1);
+                (script_buf as *mut u8).write(0);
 
                 let bytes = script.as_bytes_with_nul();
-                (script_buf.add(8) as *mut *const c_char).write(bytes.as_ptr() as *const c_char);
+
+                let bytes_buf = malloc(bytes.len()) as *mut c_char;
+                if bytes_buf.is_null() {
+                    cpp!(unsafe [memory as "void *"] {
+                        ::operator delete(memory);
+                    });
+
+                    return;
+                }
+
+                bytes_buf.copy_from_nonoverlapping(bytes.as_ptr() as *const _, bytes.len());
+
+                (script_buf.add(8) as *mut *const c_char).write(bytes_buf);
                 (script_buf.add(16) as *mut usize).write(bytes.len());
                 (self.buf_copy)(script_buf);
 
@@ -382,13 +396,16 @@ pub extern "win64" fn control_script_execute(control: *mut C4ControlScript) {
         let get_data_string = execute_info.get_data_string as *const c_void;
         let c4value_destructor = execute_info.c4value_destructor as *const c_void;
         let stdstrbuf_destructor = execute_info.stdstrbuf_destructor as *const c_void;
-        let grab_pointer = execute_info.grab_pointer as *const c_void;
 
-        cpp!(unsafe [script_engine as "C4AulScriptEngine *", direct_exec as "DirectExecFunc", context as "const char *", script as "const char *", strictness as "std::int32_t", buf_ptr as "void **", get_data_string as "GetDataStringFunc", c4value_destructor as "C4ValueDestructorFunc", stdstrbuf_destructor as "StdStrBufDestructorFunc", grab_pointer as "GrabPointerFunc"] {
+        cpp!(unsafe [script_engine as "C4AulScriptEngine *", direct_exec as "DirectExecFunc", context as "const char *", script as "const char *", strictness as "std::int32_t", buf_ptr as "const void **", get_data_string as "GetDataStringFunc", c4value_destructor as "C4ValueDestructorFunc", stdstrbuf_destructor as "StdStrBufDestructorFunc"] {
             C4Value value{(script_engine->*direct_exec)(nullptr, script, context, false, strictness)};
             StdStrBuf buf{(value.*get_data_string)()};
 
-            *buf_ptr = (buf.*grab_pointer)();
+            *buf_ptr = buf.pData;
+            buf.fRef = true;
+            buf.pData = nullptr;
+            buf.iSize = 0;
+
             (buf.*stdstrbuf_destructor)();
             (value.*c4value_destructor)();
         });
