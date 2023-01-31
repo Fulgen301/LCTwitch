@@ -100,47 +100,6 @@ impl LCTwitchMainThread {
     }
 }
 
-/*#[link(name = "detours", kind = "static")]
-extern "C" {
-    s/tatic mut _detour_trace_fn: *const extern "C" fn(format_string: *const c_char, ...) -> i32;
-    //static mut log_fn: FnLog;
-    //fn DetourTrace(format: *const c_char) -> i32;
-}
-
-#[cfg(debug_assertions)]
-cpp!{{
-
-#include <cstdarg>
-#include <cstdio>
-#include <memory>
-
-extern "C" {
-    bool(*log_fn)(const char *);
-
-    int DetourTrace(const char *const format, ...) {
-        va_list args;
-        va_start(args, format);
-
-        va_list argsCopy;
-        va_copy(argsCopy, args);
-
-        const int neededBytes{std::vsnprintf(nullptr, 0, format, argsCopy)};
-        if (neededBytes == -1) {
-            return -1;
-        }
-
-        const auto buffer = std::make_unique<char[]>(neededBytes + 1);
-
-        const int ret{std::vsnprintf(buffer.get(), neededBytes + 1, format, args)};
-
-        log_fn(buffer.get());
-
-        return ret;
-    }
-}
-
-}}*/
-
 pub struct LCTwitch {
     main_thread_struct: LCTwitchMainThread,
     log: FnLog,
